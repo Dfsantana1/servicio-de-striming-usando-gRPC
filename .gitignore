@@ -40,3 +40,9 @@ frontend/yarn-error.log*
 # OS
 Thumbs.db
 *.tmp
+
+# Local academic/APA documents (do not commit)
+Documentacion_Sistemas_Distribuidos_APA.docx
+Documentacion_Sistemas_Distribuidos.docx
+*.doc
+*.docx
