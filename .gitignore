@@ -1,0 +1,42 @@
+# Backend Python
+backend/__pycache__/
+backend/*.pyc
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/venv/
+backend/dist/
+backend/build/
+backend/*.egg-info/
+backend/app/metrics_pb2.py
+backend/app/metrics_pb2_grpc.py
+
+# Frontend Node
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.env.local
+frontend/.env.*.local
+frontend/*.log
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+.dockerignore
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+Thumbs.db
+*.tmp

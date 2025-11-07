@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+  # Backend gRPC instance 1
+  backend1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rpc-monitor-backend1
+    environment:
+      - AGENT_ID=agent-1
+      - HOSTNAME=backend1
+      - GRPC_PORT=50051
+      - TOP_N_PROCS=10
+      - INTERVAL_MIN_MS=250
+      - INTERVAL_MAX_MS=60000
+      - LOG_LEVEL=INFO
+      - ENABLE_HTTP_BRIDGE=1
+      # Uncomment to enable authentication
+      # - API_TOKEN=demo-secret-token
+    ports:
+      - "50051:50051"  # gRPC (optional local tests)
+      - "8000:8000"    # HTTP bridge for dev/proxy
+    expose:
+      - "50051"
+    networks:
+      - appnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.socket().connect(('localhost', 50051))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Backend gRPC instance 2
+  backend2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rpc-monitor-backend2
+    environment:
+      - AGENT_ID=agent-2
+      - HOSTNAME=backend2
+      - GRPC_PORT=50051
+      - TOP_N_PROCS=10
+      - INTERVAL_MIN_MS=250
+      - INTERVAL_MAX_MS=60000
+      - LOG_LEVEL=INFO
+      - ENABLE_HTTP_BRIDGE=1
+      # Uncomment to enable authentication
+      # - API_TOKEN=demo-secret-token
+    expose:
+      - "50051"
+      - "8000"
+    networks:
+      - appnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.socket().connect(('localhost', 50051))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Frontend builder (generates static files)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rpc-monitor-frontend-build
+    command: >
+      sh -c "npm ci && npm run build && echo 'Build complete: copying dist to volume' && mkdir -p /static && cp -r dist/* /static/ && echo 'Done'"
+    volumes:
+      - static_volume:/static
+    networks:
+      - appnet
+    profiles:
+      - build
+
+  # Nginx reverse proxy and load balancer
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: rpc-monitor-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - static_volume:/usr/share/nginx/html:ro
+    depends_on:
+      - backend1
+      - backend2
+    networks:
+      - appnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  appnet:
+    driver: bridge
+
+volumes:
+  static_volume:
+    driver: local

@@ -1,0 +1,70 @@
+syntax = "proto3";
+package metrics;
+
+message Empty {}
+
+message StreamRequest {
+  // intervalo de emisión en milisegundos (ej: 1000)
+  int32 interval_ms = 1;
+  // id lógico del agente (instancia) al que quiero suscribirme (opcional)
+  string agent_id = 2;
+}
+
+message CpuTimes {
+  float user = 1;
+  float system = 2;
+  float idle = 3;
+}
+
+message DiskUsage {
+  string mount = 1;
+  uint64 total = 2;
+  uint64 used = 3;
+  uint64 free = 4;
+}
+
+message NetUsage {
+  uint64 bytes_sent = 1;
+  uint64 bytes_recv = 2;
+}
+
+message ProcessInfo {
+  int32 pid = 1;
+  string name = 2;
+  float cpu_percent = 3;
+  uint64 memory_bytes = 4;
+}
+
+message MetricsSnapshot {
+  string agent_id = 1;
+  int64 timestamp_unix_ms = 2;
+  float cpu_percent = 3;
+  CpuTimes cpu_times = 4;
+  float memory_percent = 5;
+  uint64 memory_total = 6;
+  uint64 memory_used = 7;
+  float load_1m = 8;
+  float load_5m = 9;
+  float load_15m = 10;
+  repeated DiskUsage disks = 11;
+  NetUsage net = 12;
+  repeated ProcessInfo top_processes = 13;
+}
+
+message MetricsResponse {
+  MetricsSnapshot snapshot = 1;
+}
+
+message Agent {
+  string agent_id = 1;
+  string hostname = 2;
+}
+
+message AgentsList {
+  repeated Agent agents = 1;
+}
+
+service MetricsService {
+  rpc StreamMetrics(StreamRequest) returns (stream MetricsResponse);
+  rpc ListAgents(Empty) returns (AgentsList);
+}
