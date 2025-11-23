@@ -5,6 +5,7 @@ import { CpuChart } from './components/CpuChart';
 import { MemoryChart } from './components/MemoryChart';
 import { NetChart } from './components/NetChart';
 import { ProcessTable } from './components/ProcessTable';
+import { LogsViewer } from './components/LogsViewer';
 import { useMetricsStore } from './lib/store';
 import { streamMetrics, listAgents } from './lib/grpc';
 import './styles/globals.css';
@@ -20,6 +21,7 @@ function App() {
     setAgents,
     authToken,
     setSelectedAgent,
+    agentEndpoints,
   } = useMetricsStore();
 
   const streamAbortControllerRef = useRef<AbortController | null>(null);
@@ -65,7 +67,12 @@ function App() {
       setErrorMessage(null);
 
       try {
-        const generator = streamMetrics(selectedInterval, selectedAgent, authToken || undefined);
+        const generator = streamMetrics(
+          selectedInterval,
+          selectedAgent,
+          authToken || undefined,
+          agentEndpoints
+        );
 
         for await (const snapshot of generator) {
           if (abortController.signal.aborted) break;
@@ -134,6 +141,9 @@ function App() {
 
         {/* Process table */}
         <ProcessTable />
+
+        {/* Logs viewer */}
+        <LogsViewer />
       </main>
     </div>
   );

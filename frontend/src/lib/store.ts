@@ -39,6 +39,16 @@ export interface MetricsSnapshot {
 export interface Agent {
   agent_id: string;
   hostname: string;
+  endpoint?: string;  // URL del endpoint (opcional, para agentes remotos)
+}
+
+export interface LogEntry {
+  agent_id: string;
+  timestamp_unix_ms: number;
+  level: 'ERROR' | 'WARNING' | 'INFO' | 'DEBUG';
+  source: string;
+  message: string;
+  metadata?: Record<string, string>;
 }
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
@@ -71,6 +81,20 @@ export interface MetricsStore {
   // Auth token
   authToken: string | null;
   setAuthToken: (token: string | null) => void;
+
+  // Logs
+  logs: LogEntry[];
+  addLog: (log: LogEntry) => void;
+  clearLogs: () => void;
+  logFilter: {
+    level: string | null;
+    pattern: string;
+  };
+  setLogFilter: (filter: { level: string | null; pattern: string }) => void;
+
+  // Agent endpoints (para múltiples agentes)
+  agentEndpoints: Record<string, string>;
+  setAgentEndpoint: (agentId: string, endpoint: string) => void;
 
   // Reset all
   reset: () => void;
@@ -107,6 +131,21 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
   authToken: null,
   setAuthToken: (token: string | null) => set({ authToken: token }),
 
+  logs: [],
+  addLog: (log: LogEntry) =>
+    set((state) => ({
+      logs: [...state.logs.slice(-999), log],  // Mantener últimos 1000 logs
+    })),
+  clearLogs: () => set({ logs: [] }),
+  logFilter: { level: null, pattern: '' },
+  setLogFilter: (filter) => set({ logFilter: filter }),
+
+  agentEndpoints: {},
+  setAgentEndpoint: (agentId: string, endpoint: string) =>
+    set((state) => ({
+      agentEndpoints: { ...state.agentEndpoints, [agentId]: endpoint },
+    })),
+
   reset: () =>
     set({
       snapshots: [],
@@ -116,5 +155,8 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
       connectionStatus: 'idle',
       errorMessage: null,
       authToken: null,
+      logs: [],
+      logFilter: { level: null, pattern: '' },
+      agentEndpoints: {},
     }),
 }));

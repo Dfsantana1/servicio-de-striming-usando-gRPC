@@ -14,41 +14,142 @@ message CpuTimes {
   float user = 1;
   float system = 2;
   float idle = 3;
+  float nice = 4;
+  float iowait = 5;
+  float irq = 6;
+  float softirq = 7;
+  float steal = 8;
+}
+
+message CpuPerCore {
+  int32 core_id = 1;
+  float cpu_percent = 2;
+  CpuTimes cpu_times = 3;
 }
 
 message DiskUsage {
   string mount = 1;
-  uint64 total = 2;
-  uint64 used = 3;
-  uint64 free = 4;
+  string device = 2;
+  string fstype = 3;
+  uint64 total = 4;
+  uint64 used = 5;
+  uint64 free = 6;
+  float percent = 7;
+  // I/O stats (delta)
+  uint64 read_bytes = 8;
+  uint64 write_bytes = 9;
+  uint64 read_count = 10;
+  uint64 write_count = 11;
 }
 
 message NetUsage {
   uint64 bytes_sent = 1;
   uint64 bytes_recv = 2;
+  uint64 packets_sent = 3;
+  uint64 packets_recv = 4;
+  uint64 errin = 5;
+  uint64 errout = 6;
+  uint64 dropin = 7;
+  uint64 dropout = 8;
+  // Per interface stats
+  repeated NetInterface interfaces = 9;
+}
+
+message NetInterface {
+  string name = 1;
+  uint64 bytes_sent = 2;
+  uint64 bytes_recv = 3;
+  uint64 packets_sent = 4;
+  uint64 packets_recv = 5;
+  bool is_up = 6;
+}
+
+message SwapInfo {
+  uint64 total = 1;
+  uint64 used = 2;
+  uint64 free = 3;
+  float percent = 4;
+  uint64 sin = 5;  // swap in
+  uint64 sout = 6; // swap out
+}
+
+message TemperatureInfo {
+  string label = 1;
+  float current = 2;
+  float high = 3;
+  float critical = 4;
+}
+
+message SensorInfo {
+  repeated TemperatureInfo temperatures = 1;
+  float battery_percent = 2;  // -1 if not available
+  bool power_plugged = 3;     // false if not available
 }
 
 message ProcessInfo {
   int32 pid = 1;
   string name = 2;
-  float cpu_percent = 3;
-  uint64 memory_bytes = 4;
+  string username = 3;
+  float cpu_percent = 4;
+  uint64 memory_bytes = 5;
+  float memory_percent = 6;
+  string status = 7;  // running, sleeping, zombie, etc.
+  int64 create_time = 8;  // process creation time (unix timestamp)
+  int32 num_threads = 9;
+  string exe_path = 10;  // path to executable
 }
 
 message MetricsSnapshot {
   string agent_id = 1;
   int64 timestamp_unix_ms = 2;
+  
+  // CPU metrics
   float cpu_percent = 3;
   CpuTimes cpu_times = 4;
-  float memory_percent = 5;
-  uint64 memory_total = 6;
-  uint64 memory_used = 7;
-  float load_1m = 8;
-  float load_5m = 9;
-  float load_15m = 10;
-  repeated DiskUsage disks = 11;
-  NetUsage net = 12;
-  repeated ProcessInfo top_processes = 13;
+  int32 cpu_count = 5;  // number of CPU cores
+  int32 cpu_count_logical = 6;  // logical CPU count
+  repeated CpuPerCore cpu_per_core = 7;
+  float cpu_freq_current = 8;  // current CPU frequency in MHz
+  float cpu_freq_min = 9;
+  float cpu_freq_max = 10;
+  
+  // Memory metrics
+  float memory_percent = 11;
+  uint64 memory_total = 12;
+  uint64 memory_used = 13;
+  uint64 memory_available = 14;
+  uint64 memory_free = 15;
+  uint64 memory_cached = 16;
+  uint64 memory_buffers = 17;
+  SwapInfo swap = 18;
+  
+  // Load average
+  float load_1m = 19;
+  float load_5m = 20;
+  float load_15m = 21;
+  
+  // Disk metrics
+  repeated DiskUsage disks = 22;
+  
+  // Network metrics
+  NetUsage net = 23;
+  
+  // Process metrics
+  repeated ProcessInfo top_processes = 24;
+  int32 process_count = 25;  // total number of processes
+  int32 process_count_running = 26;
+  int32 process_count_sleeping = 27;
+  int32 process_count_zombie = 28;
+  
+  // System info
+  int64 uptime_seconds = 29;  // system uptime
+  string boot_time = 30;  // boot time as ISO string
+  string platform = 31;  // OS platform
+  string platform_version = 32;
+  string hostname = 33;
+  
+  // Sensors (temperature, battery, etc.)
+  SensorInfo sensors = 34;
 }
 
 message MetricsResponse {
@@ -64,7 +165,99 @@ message AgentsList {
   repeated Agent agents = 1;
 }
 
+// Alert configuration
+message AlertRule {
+  string id = 1;
+  string name = 2;
+  string metric = 3;  // cpu_percent, memory_percent, etc.
+  string operator = 4;  // gt, lt, eq, gte, lte
+  float threshold = 5;
+  int32 duration_seconds = 6;  // alert if condition holds for this duration
+  string severity = 7;  // info, warning, critical
+  bool enabled = 8;
+}
+
+message Alert {
+  string id = 1;
+  string rule_id = 2;
+  string agent_id = 3;
+  string metric = 4;
+  float value = 5;
+  float threshold = 6;
+  int64 timestamp_unix_ms = 7;
+  string severity = 8;
+  string message = 9;
+  bool resolved = 10;
+  int64 resolved_at_unix_ms = 11;
+}
+
+message AlertList {
+  repeated Alert alerts = 1;
+}
+
+// Historical metrics query
+message HistoricalQuery {
+  string agent_id = 1;
+  int64 start_time_unix_ms = 2;
+  int64 end_time_unix_ms = 3;
+  repeated string metrics = 4;  // which metrics to retrieve
+  int32 max_points = 5;  // max data points to return
+}
+
+message HistoricalData {
+  string agent_id = 1;
+  repeated MetricsSnapshot snapshots = 2;
+}
+
+// Export request
+message ExportRequest {
+  string agent_id = 1;
+  int64 start_time_unix_ms = 2;
+  int64 end_time_unix_ms = 3;
+  string format = 4;  // csv, json
+}
+
+message ExportResponse {
+  string format = 1;
+  bytes data = 2;
+  string filename = 3;
+}
+
+// Log streaming
+message LogRequest {
+  string agent_id = 1;  // Opcional: filtrar por agente
+  string level = 2;  // Opcional: ERROR, WARNING, INFO, DEBUG (vacío = todos)
+  string pattern = 3;  // Opcional: buscar patrón en mensajes
+  int32 max_lines = 4;  // Máximo de líneas a retornar (0 = ilimitado)
+  bool follow = 5;  // Seguir nuevos logs (streaming continuo)
+}
+
+message LogEntry {
+  string agent_id = 1;
+  int64 timestamp_unix_ms = 2;
+  string level = 3;  // ERROR, WARNING, INFO, DEBUG
+  string source = 4;  // syslog, application, kernel, etc.
+  string message = 5;
+  map<string, string> metadata = 6;  // Campos adicionales
+}
+
 service MetricsService {
+  // Real-time streaming
   rpc StreamMetrics(StreamRequest) returns (stream MetricsResponse);
+  
+  // Agent management
   rpc ListAgents(Empty) returns (AgentsList);
+  
+  // Historical data
+  rpc GetHistoricalMetrics(HistoricalQuery) returns (HistoricalData);
+  
+  // Alerts
+  rpc ListAlerts(Empty) returns (AlertList);
+  rpc GetActiveAlerts(Empty) returns (AlertList);
+  
+  // Export
+  rpc ExportMetrics(ExportRequest) returns (ExportResponse);
+  
+  // Log streaming
+  rpc StreamLogs(LogRequest) returns (stream LogEntry);
 }
