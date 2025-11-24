@@ -286,6 +286,12 @@ curl http://localhost:8080/health
 - [Frontend README](frontend/README.md)
 - [Nginx README](nginx/README.md)
 
+## Guías de Integración
+
+- **[Guía Completa de Integraciones gRPC](GRPC_INTEGRATIONS.md)** - Explica todas las formas de integrar gRPC (Python, HTTP Bridge, otros lenguajes)
+- [Configuración Multi-Agente](backend/MULTI_AGENT_SETUP.md) - Monitorear múltiples máquinas
+- [Roadmap de Funcionalidades](backend/FEATURES_ROADMAP.md) - Funcionalidades futuras
+
 ## Contribuciones
 
 Las contribuciones son bienvenidas. Por favor:

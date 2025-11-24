@@ -1,6 +1,7 @@
 """gRPC server for metrics streaming."""
 import asyncio
 import logging
+import os
 import sys
 from typing import AsyncGenerator, Any
 
@@ -25,6 +26,31 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Configurar logging de gRPC para reducir mensajes de fork handlers
+# Estos mensajes son informativos pero pueden ser molestos
+grpc_logger = logging.getLogger('grpc')
+grpc_logger.setLevel(logging.WARNING)  # Solo mostrar WARNING y ERROR de gRPC
+
+# Filtrar mensajes específicos de fork handlers
+class ForkHandlerFilter(logging.Filter):
+    """Filtra mensajes de fork handlers de gRPC."""
+    def filter(self, record):
+        # Filtrar mensajes sobre fork handlers
+        if 'fork' in record.getMessage().lower() and 'skip' in record.getMessage().lower():
+            return False
+        # Filtrar mensajes de fork_posix.cc
+        if 'fork_posix' in record.getMessage():
+            return False
+        return True
+
+# Aplicar filtro a todos los loggers de gRPC
+for handler in logging.root.handlers:
+    handler.addFilter(ForkHandlerFilter())
+
+# También configurar variables de entorno de gRPC para reducir verbosidad
+os.environ.setdefault('GRPC_VERBOSITY', 'ERROR')  # Solo errores
+os.environ.setdefault('GRPC_TRACE', '')  # Sin trazas
 
 
 class MetricsServicer(metrics_pb2_grpc.MetricsServiceServicer):
@@ -94,7 +120,7 @@ class MetricsServicer(metrics_pb2_grpc.MetricsServiceServicer):
         request: metrics_pb2.Empty,
         context: grpc.aio.ServicerContext
     ) -> metrics_pb2.AgentsList:
-        """List available agents."""
+        """List available agents (local + known remote agents)."""
         # Validate authentication
         metadata = context.invocation_metadata()
         if not validate_token(metadata):
@@ -104,13 +130,34 @@ class MetricsServicer(metrics_pb2_grpc.MetricsServiceServicer):
         if hostname == "localhost":
             hostname = utils.get_local_hostname()
         
-        agent = metrics_pb2.Agent(
-            agent_id=config.AGENT_ID,
-            hostname=hostname
-        )
+        # Agregar el agente local
+        agents = [
+            metrics_pb2.Agent(
+                agent_id=config.AGENT_ID,
+                hostname=hostname
+            )
+        ]
         
-        logger.info(f"ListAgents: returning {config.AGENT_ID}")
-        return metrics_pb2.AgentsList(agents=[agent])
+        # Agregar agentes conocidos (remotos)
+        # Nota: protobuf no tiene campo endpoint, pero el HTTP bridge sí lo incluye
+        for agent_id, endpoint in config.KNOWN_AGENTS.items():
+            # Extraer hostname del endpoint si es posible
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(endpoint)
+                remote_hostname = parsed.hostname or agent_id
+            except:
+                remote_hostname = agent_id
+            
+            agents.append(
+                metrics_pb2.Agent(
+                    agent_id=agent_id,
+                    hostname=remote_hostname
+                )
+            )
+        
+        logger.info(f"ListAgents: returning {len(agents)} agents ({config.AGENT_ID} + {len(config.KNOWN_AGENTS)} known)")
+        return metrics_pb2.AgentsList(agents=agents)
     
     async def StreamLogs(
         self,
@@ -352,8 +399,36 @@ class MetricsServicer(metrics_pb2_grpc.MetricsServiceServicer):
 
 async def serve():
     """Start the gRPC server."""
-    # Create async server
-    server = aio.server()
+    # Configurar thread pool para operaciones bloqueantes (psutil, etc.)
+    # Esto permite que múltiples requests se ejecuten concurrentemente
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # Número de workers para operaciones bloqueantes
+    # Por defecto: min(32, (os.cpu_count() or 1) + 4)
+    grpc_max_workers = os.getenv("GRPC_MAX_WORKERS")
+    if grpc_max_workers:
+        max_workers = int(grpc_max_workers)
+    else:
+        max_workers = min(32, (os.cpu_count() or 1) + 4)
+    
+    # Crear servidor async con thread pool para operaciones bloqueantes
+    # Esto permite manejar múltiples requests concurrentes eficientemente
+    server = aio.server(
+        ThreadPoolExecutor(max_workers=max_workers),
+        options=[
+            # Configurar límites de concurrencia
+            ('grpc.keepalive_time_ms', 30000),  # Keepalive ping cada 30s
+            ('grpc.keepalive_timeout_ms', 5000),  # Timeout de keepalive
+            ('grpc.keepalive_permit_without_calls', True),  # Permitir keepalive sin calls activos
+            ('grpc.http2.max_pings_without_data', 0),  # Sin límite de pings
+            ('grpc.http2.min_time_between_pings_ms', 10000),  # Mínimo 10s entre pings
+            ('grpc.http2.min_ping_interval_without_data_ms', 300000),  # 5 minutos sin datos
+            # Configurar límites de conexiones concurrentes
+            ('grpc.max_connection_idle_ms', 300000),  # 5 minutos de idle
+            ('grpc.max_connection_age_ms', 1800000),  # 30 minutos máximo
+            ('grpc.max_connection_age_grace_ms', 5000),  # 5 segundos de gracia
+        ]
+    )
     
     # Add servicer
     servicer = MetricsServicer()
@@ -366,6 +441,8 @@ async def serve():
     logger.info(f"Starting gRPC server on {port}")
     logger.info(f"Agent ID: {config.AGENT_ID}")
     logger.info(f"Auth required: {config.REQUIRE_AUTH}")
+    logger.info(f"Max workers for blocking operations: {max_workers}")
+    logger.info(f"Server configured for concurrent requests")
     
     await server.start()
     logger.info("gRPC server started successfully")
@@ -378,16 +455,50 @@ async def serve():
             return
 
         app = web.Application()
+        
+        # CORS headers helper
+        def add_cors_headers(response: web.Response) -> web.Response:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Access-Control-Allow-Headers'] = 'Authorization,Content-Type'
+            response.headers['Access-Control-Allow-Methods'] = 'POST,OPTIONS'
+            return response
+        
+        # CORS preflight handler
+        async def options_handler(request: Any):
+            response = web.Response(status=204)
+            return add_cors_headers(response)
+        
         async def list_agents_handler(request: Any):
             if not validate_http_token(request.headers.get("Authorization")):
-                return web.json_response({"error": "unauthenticated"}, status=401)
+                return add_cors_headers(web.json_response({"error": "unauthenticated"}, status=401))
+            
             hostname = config.HOSTNAME if config.HOSTNAME != "localhost" else utils.get_local_hostname()
-            agent = {"agent_id": config.AGENT_ID, "hostname": hostname}
-            return web.json_response({"agents": [agent]})
+            
+            # Agregar el agente local
+            agents = [{"agent_id": config.AGENT_ID, "hostname": hostname}]
+            
+            # Agregar agentes conocidos (remotos) con sus endpoints
+            for agent_id, endpoint in config.KNOWN_AGENTS.items():
+                # Extraer hostname del endpoint si es posible
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(endpoint)
+                    remote_hostname = parsed.hostname or agent_id
+                except:
+                    remote_hostname = agent_id
+                
+                agents.append({
+                    "agent_id": agent_id,
+                    "hostname": remote_hostname,
+                    "endpoint": endpoint  # Incluir el endpoint para que el frontend lo use
+                })
+            
+            logger.info(f"ListAgents (HTTP): returning {len(agents)} agents")
+            return add_cors_headers(web.json_response({"agents": agents}))
 
         async def stream_metrics_handler(request: Any):
             if not validate_http_token(request.headers.get("Authorization")):
-                return web.json_response({"error": "unauthenticated"}, status=401)
+                return add_cors_headers(web.json_response({"error": "unauthenticated"}, status=401))
 
             payload = await request.json()
             interval_ms = config.validate_interval(int(payload.get("interval_ms", config.INTERVAL_DEFAULT_MS)))
@@ -400,6 +511,8 @@ async def serve():
                     'Content-Type': 'application/x-ndjson',
                     'Cache-Control': 'no-cache',
                     'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Authorization,Content-Type',
                 }
             )
             await response.prepare(request)
@@ -415,13 +528,117 @@ async def serve():
                     await response.write(data.encode('utf-8'))
                     await asyncio.sleep(interval)
             except (asyncio.CancelledError, ConnectionResetError):
-                pass
+                # Cliente cerró la conexión, es normal
+                logger.debug("StreamMetrics: Client disconnected")
+            except Exception as e:
+                # Solo loggear errores reales, no conexiones cerradas
+                error_msg = str(e)
+                if "Cannot write to closing transport" not in error_msg and "Connection reset" not in error_msg:
+                    logger.warning(f"Error in stream_metrics_handler: {e}")
             finally:
-                await response.write_eof()
+                try:
+                    await response.write_eof()
+                except (ConnectionResetError, RuntimeError, Exception) as e:
+                    # Cliente ya cerró la conexión, ignorar silenciosamente
+                    error_msg = str(e)
+                    if "Cannot write to closing transport" not in error_msg and "Connection reset" not in error_msg:
+                        logger.debug(f"StreamMetrics: Connection cleanup: {e}")
             return response
 
-        app.router.add_post('/metrics.MetricsService/ListAgents', list_agents_handler)
-        app.router.add_post('/metrics.MetricsService/StreamMetrics', stream_metrics_handler)
+        async def stream_logs_handler(request: Any):
+            if not validate_http_token(request.headers.get("Authorization")):
+                return add_cors_headers(web.json_response({"error": "unauthenticated"}, status=401))
+
+            payload = await request.json()
+            # El frontend puede enviar cualquier agent_id, pero siempre usamos el AGENT_ID del servidor
+            # para los datos que enviamos. Esto permite que el frontend se conecte a diferentes backends.
+            requested_agent_id = payload.get("agent_id")
+            level = payload.get("level") or None
+            pattern = payload.get("pattern") or None
+            follow = payload.get("follow", True)
+            
+            # Siempre usamos el AGENT_ID del servidor para los datos
+            # Si el frontend solicita un agent_id diferente, simplemente lo ignoramos
+            # y enviamos los datos del servidor actual
+            agent_id = config.AGENT_ID
+
+            response = web.StreamResponse(
+                status=200,
+                reason='OK',
+                headers={
+                    'Content-Type': 'application/x-ndjson',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Authorization,Content-Type',
+                }
+            )
+            await response.prepare(request)
+
+            try:
+                # Batch logs para mejor rendimiento
+                log_batch = []
+                last_flush = asyncio.get_event_loop().time()
+                
+                async for log_dict in servicer.log_collector.stream_logs(
+                    agent_id=config.AGENT_ID,
+                    level=level,
+                    pattern=pattern,
+                    follow=follow
+                ):
+                    import json
+                    log_entry = {
+                        "agent_id": log_dict.get("agent_id", config.AGENT_ID),
+                        "timestamp_unix_ms": int(log_dict["timestamp"].timestamp() * 1000),
+                        "level": log_dict.get("level", "INFO"),
+                        "source": log_dict.get("source", "system"),
+                        "message": log_dict.get("message", ""),
+                        "metadata": log_dict.get("metadata", {}),
+                    }
+                    log_batch.append(log_entry)
+                    
+                    # Flush batch cada 50ms o cuando tenga 5 logs
+                    current_time = asyncio.get_event_loop().time()
+                    if len(log_batch) >= 5 or (current_time - last_flush) >= 0.05:
+                        batch_data = "\n".join(json.dumps(entry) for entry in log_batch) + "\n"
+                        await response.write(batch_data.encode('utf-8'))
+                        log_batch = []
+                        last_flush = current_time
+                
+                # Flush cualquier log pendiente
+                if log_batch:
+                    batch_data = "\n".join(json.dumps(entry) for entry in log_batch) + "\n"
+                    await response.write(batch_data.encode('utf-8'))
+                    
+            except (asyncio.CancelledError, ConnectionResetError):
+                # Cliente cerró la conexión, es normal
+                pass
+            except Exception as e:
+                # Solo loggear errores reales, no conexiones cerradas
+                if "Cannot write to closing transport" not in str(e) and "Connection reset" not in str(e):
+                    logger.warning(f"Error in stream_logs_handler: {e}")
+            finally:
+                try:
+                    await response.write_eof()
+                except (ConnectionResetError, RuntimeError) as e:
+                    # Cliente ya cerró la conexión, ignorar
+                    if "Cannot write to closing transport" not in str(e):
+                        logger.debug(f"Connection closed by client: {e}")
+            return response
+
+        # Register routes with and without /grpc prefix for compatibility
+        routes = [
+            ('/metrics.MetricsService/ListAgents', list_agents_handler),
+            ('/metrics.MetricsService/StreamMetrics', stream_metrics_handler),
+            ('/metrics.MetricsService/StreamLogs', stream_logs_handler),
+            ('/grpc/metrics.MetricsService/ListAgents', list_agents_handler),
+            ('/grpc/metrics.MetricsService/StreamMetrics', stream_metrics_handler),
+            ('/grpc/metrics.MetricsService/StreamLogs', stream_logs_handler),
+        ]
+        
+        for route_path, handler in routes:
+            app.router.add_post(route_path, handler)
+            app.router.add_options(route_path, options_handler)
 
         try:
             runner = web.AppRunner(app)

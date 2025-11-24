@@ -95,6 +95,7 @@ export interface MetricsStore {
   // Agent endpoints (para múltiples agentes)
   agentEndpoints: Record<string, string>;
   setAgentEndpoint: (agentId: string, endpoint: string) => void;
+  removeAgentEndpoint: (agentId: string) => void;
 
   // Reset all
   reset: () => void;
@@ -133,18 +134,61 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
 
   logs: [],
   addLog: (log: LogEntry) =>
-    set((state) => ({
-      logs: [...state.logs.slice(-999), log],  // Mantener últimos 1000 logs
-    })),
+    set((state) => {
+      // Optimización: evitar duplicados y mantener solo últimos 500 logs
+      const MAX_LOGS = 500;
+      const isDuplicate = state.logs.some(
+        (l) =>
+          l.timestamp_unix_ms === log.timestamp_unix_ms &&
+          l.message === log.message &&
+          l.source === log.source
+      );
+      
+      if (isDuplicate) return state;
+      
+      return {
+        logs: [...state.logs.slice(-MAX_LOGS + 1), log],
+      };
+    }),
   clearLogs: () => set({ logs: [] }),
   logFilter: { level: null, pattern: '' },
   setLogFilter: (filter) => set({ logFilter: filter }),
 
-  agentEndpoints: {},
+  agentEndpoints: (() => {
+    // Cargar agentes guardados desde localStorage al iniciar
+    try {
+      const saved = localStorage.getItem('AGENT_ENDPOINTS');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.warn('Error loading saved agent endpoints:', e);
+    }
+    return {};
+  })(),
   setAgentEndpoint: (agentId: string, endpoint: string) =>
-    set((state) => ({
-      agentEndpoints: { ...state.agentEndpoints, [agentId]: endpoint },
-    })),
+    set((state) => {
+      const newEndpoints = { ...state.agentEndpoints, [agentId]: endpoint };
+      // Guardar en localStorage
+      try {
+        localStorage.setItem('AGENT_ENDPOINTS', JSON.stringify(newEndpoints));
+      } catch (e) {
+        console.warn('Error saving agent endpoints:', e);
+      }
+      return { agentEndpoints: newEndpoints };
+    }),
+  removeAgentEndpoint: (agentId: string) =>
+    set((state) => {
+      const newEndpoints = { ...state.agentEndpoints };
+      delete newEndpoints[agentId];
+      // Actualizar localStorage
+      try {
+        localStorage.setItem('AGENT_ENDPOINTS', JSON.stringify(newEndpoints));
+      } catch (e) {
+        console.warn('Error saving agent endpoints:', e);
+      }
+      return { agentEndpoints: newEndpoints };
+    }),
 
   reset: () =>
     set({
@@ -157,6 +201,17 @@ export const useMetricsStore = create<MetricsStore>((set) => ({
       authToken: null,
       logs: [],
       logFilter: { level: null, pattern: '' },
-      agentEndpoints: {},
+      agentEndpoints: (() => {
+        // Cargar agentes guardados desde localStorage al resetear
+        try {
+          const saved = localStorage.getItem('AGENT_ENDPOINTS');
+          if (saved) {
+            return JSON.parse(saved);
+          }
+        } catch (e) {
+          console.warn('Error loading saved agent endpoints:', e);
+        }
+        return {};
+      })(),
     }),
 }));

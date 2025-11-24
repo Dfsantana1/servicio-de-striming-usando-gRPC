@@ -330,7 +330,7 @@ class LogCollector:
                          pattern: Optional[str] = None,
                          follow: bool = True) -> AsyncGenerator[Dict, None]:
         """
-        Stream logs continuously.
+        Stream logs continuously with optimized polling.
         
         Args:
             agent_id: ID of the agent
@@ -341,27 +341,56 @@ class LogCollector:
         Yields:
             Log entries as dictionaries
         """
-        # Enviar logs históricos primero
-        historical_logs = self.get_system_logs(level, pattern, max_lines=100)
+        # Enviar logs históricos primero (últimos 50 para carga inicial más rápida)
+        historical_logs = self.get_system_logs(level, pattern, max_lines=50)
+        seen_logs = set()  # Track seen logs to avoid duplicates
+        
         for log_entry in historical_logs:
             log_entry['agent_id'] = agent_id
+            # Create unique ID for log entry
+            log_id = f"{log_entry['timestamp']}_{log_entry['message'][:50]}"
+            seen_logs.add(log_id)
             yield log_entry
         
         if not follow:
             return
         
-        # Stream nuevos logs
+        # Stream nuevos logs con polling más frecuente
         last_check = datetime.now()
+        poll_interval = 0.3  # Check every 300ms for faster updates
+        
         while True:
-            await asyncio.sleep(1)  # Check every second
+            await asyncio.sleep(poll_interval)
             
-            current_logs = self.get_system_logs(level, pattern, max_lines=50)
-            
-            # Filtrar logs nuevos (después de last_check)
-            for log_entry in current_logs:
-                if log_entry['timestamp'] > last_check:
-                    log_entry['agent_id'] = agent_id
+            try:
+                current_logs = self.get_system_logs(level, pattern, max_lines=20)
+                
+                # Filtrar logs nuevos (después de last_check) y evitar duplicados
+                new_logs = []
+                for log_entry in current_logs:
+                    log_id = f"{log_entry['timestamp']}_{log_entry['message'][:50]}"
+                    
+                    # Solo enviar si es nuevo y no lo hemos visto
+                    if log_entry['timestamp'] > last_check and log_id not in seen_logs:
+                        seen_logs.add(log_id)
+                        log_entry['agent_id'] = agent_id
+                        new_logs.append(log_entry)
+                
+                # Enviar logs nuevos en orden
+                for log_entry in sorted(new_logs, key=lambda x: x['timestamp']):
                     yield log_entry
-            
-            last_check = datetime.now()
+                
+                # Limpiar seen_logs si se vuelve muy grande (mantener últimos 1000)
+                if len(seen_logs) > 1000:
+                    seen_logs.clear()
+                    # Re-agregar los últimos logs actuales
+                    for log_entry in current_logs[-100:]:
+                        log_id = f"{log_entry['timestamp']}_{log_entry['message'][:50]}"
+                        seen_logs.add(log_id)
+                
+                last_check = datetime.now()
+                
+            except Exception as e:
+                logger.warning(f"Error in log streaming: {e}")
+                await asyncio.sleep(1)  # Wait longer on error
 

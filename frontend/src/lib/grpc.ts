@@ -35,7 +35,29 @@ export async function* streamMetrics(
   agentEndpoints?: Record<string, string>
 ): AsyncGenerator<MetricsSnapshot> {
   const baseUrl = getAgentBaseUrl(agentId, agentEndpoints);
-  const url = `${baseUrl}/metrics.MetricsService/StreamMetrics`;
+  // Construir URL correctamente
+  let url: string;
+  
+  // Debug: Log la URL que se está usando
+  console.log('[streamMetrics] Agent ID:', agentId);
+  console.log('[streamMetrics] Base URL:', baseUrl);
+  console.log('[streamMetrics] Agent Endpoints:', agentEndpoints);
+  if (baseUrl.startsWith('http')) {
+    // URL absoluta (ngrok, etc.) - siempre agregar /grpc si no está presente
+    const cleanUrl = baseUrl.replace(/\/$/, ''); // Quitar trailing slash
+    if (cleanUrl.endsWith('/grpc')) {
+      url = `${cleanUrl}/metrics.MetricsService/StreamMetrics`;
+    } else {
+      url = `${cleanUrl}/grpc/metrics.MetricsService/StreamMetrics`;
+    }
+  } else {
+    // URL relativa - ya debería incluir /grpc
+    url = baseUrl.endsWith('/grpc') || baseUrl === '/grpc'
+      ? `${baseUrl}/metrics.MetricsService/StreamMetrics`
+      : `${baseUrl}/metrics.MetricsService/StreamMetrics`;
+  }
+  
+  console.log('[streamMetrics] Final URL:', url);
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -45,16 +67,38 @@ export async function* streamMetrics(
 
   const body = JSON.stringify({ interval_ms: intervalMs, agent_id: agentId || "" });
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers,
-    body,
-  });
+  // Agregar timeout y mejor manejo de errores
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos timeout (aumentado para conexiones remotas)
 
-  if (!res.ok) {
-    throw new Error(`StreamMetrics failed: ${res.status} ${res.statusText}`);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => res.statusText);
+      throw new Error(`StreamMetrics failed: ${res.status} ${res.statusText} - ${errorText}`);
+    }
+    if (!res.body) throw new Error("StreamMetrics: empty body");
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        throw new Error(`StreamMetrics timeout: No response from ${url} after 30 seconds`);
+      }
+      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+        throw new Error(`Cannot connect to ${url}. Check if the server is running and accessible.`);
+      }
+    }
+    throw error;
   }
-  if (!res.body) throw new Error("StreamMetrics: empty body");
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -87,9 +131,9 @@ export async function* streamMetrics(
 /**
  * List available agents via JSON endpoint.
  */
-export async function listAgents(authToken?: string, attempts = 4): Promise<Agent[]> {
-  // Because the proxy load-balances between backends and each backend only knows itself,
-  // we issue multiple requests and aggregate unique agents by agent_id.
+export async function listAgents(authToken?: string, attempts = 1): Promise<Agent[]> {
+  // Reducido a 1 intento por defecto para evitar múltiples requests innecesarios
+  // Si hay múltiples backends, se pueden agregar más intentos
   const url = `${GRPC_BASE_URL}/metrics.MetricsService/ListAgents`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -97,29 +141,52 @@ export async function listAgents(authToken?: string, attempts = 4): Promise<Agen
   };
   if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
 
-  const calls = Array.from({ length: Math.max(1, attempts) }, () =>
-    fetch(url, { method: "POST", headers, body: "{}" })
-  );
+  // Agregar timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 15 segundos (aumentado para conexiones remotas)
 
-  const results = await Promise.allSettled(calls);
-  const map = new Map<string, Agent>();
+  try {
+    const calls = Array.from({ length: Math.max(1, attempts) }, () =>
+      fetch(url, { 
+        method: "POST", 
+        headers, 
+        body: "{}",
+        signal: controller.signal
+      })
+    );
 
-  for (const r of results) {
-    if (r.status === "fulfilled") {
-      try {
-        const data = await r.value.json().catch(() => ({} as any));
-        const agents = Array.isArray((data as any).agents) ? (data as any).agents : [];
-        for (const a of agents) {
-          const agent: Agent = { agent_id: String(a?.agent_id ?? ""), hostname: String(a?.hostname ?? "") };
-          if (agent.agent_id) map.set(agent.agent_id, agent);
+    const results = await Promise.allSettled(calls);
+    clearTimeout(timeoutId);
+    
+    const map = new Map<string, Agent>();
+
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        try {
+          const data = await r.value.json().catch(() => ({} as any));
+          const agents = Array.isArray((data as any).agents) ? (data as any).agents : [];
+          for (const a of agents) {
+            const agent: Agent = { 
+              agent_id: String(a?.agent_id ?? ""), 
+              hostname: String(a?.hostname ?? ""),
+              endpoint: a?.endpoint ? String(a.endpoint) : undefined  // Incluir endpoint si viene del backend
+            };
+            if (agent.agent_id) map.set(agent.agent_id, agent);
+          }
+        } catch {
+          // ignore individual parse errors
         }
-      } catch {
-        // ignore individual parse errors
       }
     }
-  }
 
-  return Array.from(map.values());
+    return Array.from(map.values());
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('ListAgents timeout: Server not responding');
+    }
+    throw error;
+  }
 }
 
 /**
@@ -134,7 +201,22 @@ export async function* streamLogs(
   agentEndpoints?: Record<string, string>
 ): AsyncGenerator<LogEntry> {
   const baseUrl = getAgentBaseUrl(agentId, agentEndpoints);
-  const url = `${baseUrl}/metrics.MetricsService/StreamLogs`;
+  // Construir URL correctamente
+  let url: string;
+  if (baseUrl.startsWith('http')) {
+    // URL absoluta (ngrok, etc.) - siempre agregar /grpc si no está presente
+    const cleanUrl = baseUrl.replace(/\/$/, ''); // Quitar trailing slash
+    if (cleanUrl.endsWith('/grpc')) {
+      url = `${cleanUrl}/metrics.MetricsService/StreamLogs`;
+    } else {
+      url = `${cleanUrl}/grpc/metrics.MetricsService/StreamLogs`;
+    }
+  } else {
+    // URL relativa - ya debería incluir /grpc
+    url = baseUrl.endsWith('/grpc') || baseUrl === '/grpc'
+      ? `${baseUrl}/metrics.MetricsService/StreamLogs`
+      : `${baseUrl}/metrics.MetricsService/StreamLogs`;
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -150,16 +232,38 @@ export async function* streamLogs(
     max_lines: follow ? 0 : 100,
   });
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers,
-    body,
-  });
+  // Agregar timeout y mejor manejo de errores
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos timeout (aumentado para conexiones remotas)
 
-  if (!res.ok) {
-    throw new Error(`StreamLogs failed: ${res.status} ${res.statusText}`);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => res.statusText);
+      throw new Error(`StreamLogs failed: ${res.status} ${res.statusText} - ${errorText}`);
+    }
+    if (!res.body) throw new Error("StreamLogs: empty body");
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        throw new Error(`StreamLogs timeout: No response from ${url} after 30 seconds`);
+      }
+      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+        throw new Error(`Cannot connect to ${url}. Check if the server is running and accessible.`);
+      }
+    }
+    throw error;
   }
-  if (!res.body) throw new Error("StreamLogs: empty body");
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

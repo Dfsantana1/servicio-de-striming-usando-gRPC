@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo, useCallback } from 'react';
 import { useMetricsStore } from '../lib/store';
 import { streamLogs } from '../lib/grpc';
 
@@ -16,15 +16,37 @@ export function LogsViewer() {
 
   const streamAbortControllerRef = useRef<AbortController | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom
+  // Optimizado: Auto-scroll solo si el usuario está al final
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!scrollContainerRef.current || !shouldAutoScrollRef.current) return;
+    
+    const container = scrollContainerRef.current;
+    const isNearBottom = 
+      container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+    
+    if (isNearBottom) {
+      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [logs]);
 
-  // Stream logs
+  // Detectar si el usuario hace scroll manual
+  const handleScroll = useCallback(() => {
+    if (!scrollContainerRef.current) return;
+    const container = scrollContainerRef.current;
+    const isNearBottom = 
+      container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+    shouldAutoScrollRef.current = isNearBottom;
+  }, []);
+
+  // Stream logs con optimización
   useEffect(() => {
-    if (!selectedAgent) return;
+    if (!selectedAgent) {
+      clearLogs();
+      return;
+    }
 
     // Cancel previous stream
     if (streamAbortControllerRef.current) {
@@ -33,6 +55,21 @@ export function LogsViewer() {
 
     const abortController = new AbortController();
     streamAbortControllerRef.current = abortController;
+    
+    // Guardar el agente actual para validar logs
+    const currentAgent = selectedAgent;
+
+    // Batch logs para mejor rendimiento
+    let logBatch: typeof logs = [];
+    let batchTimeout: NodeJS.Timeout | null = null;
+
+    const flushBatch = () => {
+      if (logBatch.length > 0 && !abortController.signal.aborted) {
+        logBatch.forEach(addLog);
+        logBatch = [];
+      }
+      batchTimeout = null;
+    };
 
     const startStream = async () => {
       try {
@@ -47,8 +84,27 @@ export function LogsViewer() {
 
         for await (const logEntry of generator) {
           if (abortController.signal.aborted) break;
-          addLog(logEntry);
+          
+          // Validar que el log corresponde al agente actual
+          // Si el agente cambió, ignorar este log
+          if (logEntry.agent_id !== currentAgent) {
+            console.warn(`Log from ${logEntry.agent_id} but selected agent is ${currentAgent}, ignoring`);
+            continue;
+          }
+          
+          // Agregar a batch
+          logBatch.push(logEntry);
+          
+          // Flush batch cada 100ms o cuando tenga 10 logs
+          if (logBatch.length >= 10) {
+            flushBatch();
+          } else if (!batchTimeout) {
+            batchTimeout = setTimeout(flushBatch, 100);
+          }
         }
+        
+        // Flush cualquier log pendiente
+        flushBatch();
       } catch (error) {
         if (abortController.signal.aborted) return;
         console.error('Log stream error:', error);
@@ -58,19 +114,28 @@ export function LogsViewer() {
     startStream();
 
     return () => {
+      if (batchTimeout) clearTimeout(batchTimeout);
       abortController.abort();
       streamAbortControllerRef.current = null;
     };
-  }, [selectedAgent, logFilter.level, logFilter.pattern, authToken, agentEndpoints, addLog]);
+  }, [selectedAgent, logFilter.level, logFilter.pattern, authToken, agentEndpoints, addLog, clearLogs]);
+  
+  // Limpiar logs cuando cambia el agente
+  useEffect(() => {
+    clearLogs();
+  }, [selectedAgent, clearLogs]);
 
-  const filteredLogs = logs.filter((log) => {
-    if (selectedAgent && log.agent_id !== selectedAgent) return false;
-    if (logFilter.level && log.level !== logFilter.level) return false;
-    if (logFilter.pattern && !log.message.toLowerCase().includes(logFilter.pattern.toLowerCase())) {
-      return false;
-    }
-    return true;
-  });
+  // Memoizar logs filtrados para mejor rendimiento
+  const filteredLogs = useMemo(() => {
+    return logs.filter((log) => {
+      if (selectedAgent && log.agent_id !== selectedAgent) return false;
+      if (logFilter.level && log.level !== logFilter.level) return false;
+      if (logFilter.pattern && !log.message.toLowerCase().includes(logFilter.pattern.toLowerCase())) {
+        return false;
+      }
+      return true;
+    });
+  }, [logs, selectedAgent, logFilter.level, logFilter.pattern]);
 
   const getLevelColor = (level: string) => {
     switch (level) {
@@ -123,7 +188,11 @@ export function LogsViewer() {
         </div>
       </div>
 
-      <div className="bg-background rounded border h-96 overflow-y-auto font-mono text-sm">
+      <div 
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="bg-background rounded border h-96 overflow-y-auto font-mono text-sm"
+      >
         {filteredLogs.length === 0 ? (
           <div className="p-4 text-center text-muted-foreground">
             {selectedAgent ? 'Esperando logs...' : 'Selecciona un agente para ver logs'}
@@ -132,14 +201,14 @@ export function LogsViewer() {
           <div className="p-2 space-y-1">
             {filteredLogs.map((log, idx) => (
               <div
-                key={idx}
+                key={`${log.timestamp_unix_ms}-${idx}`}
                 className={`p-2 rounded border ${getLevelColor(log.level)}`}
               >
                 <div className="flex items-start gap-2">
                   <span className="text-xs opacity-70">{formatTime(log.timestamp_unix_ms)}</span>
                   <span className="font-semibold min-w-[80px]">{log.level}</span>
                   <span className="text-xs opacity-70 min-w-[120px] truncate">{log.source}</span>
-                  <span className="flex-1">{log.message}</span>
+                  <span className="flex-1 break-words">{log.message}</span>
                 </div>
               </div>
             ))}

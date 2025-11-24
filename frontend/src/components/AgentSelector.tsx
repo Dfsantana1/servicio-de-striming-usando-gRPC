@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMetricsStore } from '../lib/store';
 
 export function AgentSelector() {
-  const { agents, selectedAgent, setSelectedAgent, agentEndpoints, setAgentEndpoint } = useMetricsStore();
+  const { agents, selectedAgent, setSelectedAgent, agentEndpoints, setAgentEndpoint, removeAgentEndpoint } = useMetricsStore();
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [newAgentId, setNewAgentId] = useState('');
   const [newAgentEndpoint, setNewAgentEndpoint] = useState('');
@@ -73,19 +73,37 @@ export function AgentSelector() {
         </div>
       )}
 
-      <select
-        value={selectedAgent || ''}
-        onChange={(e) => setSelectedAgent(e.target.value || null)}
-        className="px-3 py-2 text-sm border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-      >
-        <option value="">-- Seleccionar agente --</option>
-        {allAgents.map((agent) => (
-          <option key={agent.agent_id} value={agent.agent_id}>
-            {agent.hostname} ({agent.agent_id})
-            {agent.endpoint && ' [Remoto]'}
-          </option>
-        ))}
-      </select>
+      <div className="flex gap-2">
+        <select
+          value={selectedAgent || ''}
+          onChange={(e) => setSelectedAgent(e.target.value || null)}
+          className="flex-1 px-3 py-2 text-sm border border-input rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+        >
+          <option value="">-- Seleccionar agente --</option>
+          {allAgents.map((agent) => (
+            <option key={agent.agent_id} value={agent.agent_id}>
+              {agent.hostname} ({agent.agent_id})
+              {agent.endpoint && ' [Remoto]'}
+            </option>
+          ))}
+        </select>
+        {selectedAgent && agentEndpoints[selectedAgent] && (
+          <button
+            onClick={() => {
+              if (confirm(`¿Eliminar agente remoto "${selectedAgent}"?`)) {
+                removeAgentEndpoint(selectedAgent);
+                if (selectedAgent === selectedAgent) {
+                  setSelectedAgent(null);
+                }
+              }
+            }}
+            className="px-2 py-1 text-xs bg-destructive/10 text-destructive border border-destructive/20 rounded hover:bg-destructive/20"
+            title="Eliminar agente remoto"
+          >
+            ×
+          </button>
+        )}
+      </div>
     </div>
   );
 }

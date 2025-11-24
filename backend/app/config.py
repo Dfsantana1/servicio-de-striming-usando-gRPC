@@ -23,6 +23,21 @@ REQUIRE_AUTH = bool(API_TOKEN)
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# Concurrency config
+GRPC_MAX_WORKERS = int(os.getenv("GRPC_MAX_WORKERS", 0))  # 0 = auto (min(32, cpu_count + 4))
+
+# Known agents registry (para múltiples nodos)
+# Formato: "agent_id1:endpoint1,agent_id2:endpoint2"
+# Ejemplo: "servidor-1:http://192.168.1.100:8000/grpc,servidor-2:http://192.168.1.101:8000/grpc"
+KNOWN_AGENTS_STR = os.getenv("KNOWN_AGENTS", "")
+KNOWN_AGENTS: dict[str, str] = {}
+if KNOWN_AGENTS_STR:
+    for entry in KNOWN_AGENTS_STR.split(","):
+        entry = entry.strip()
+        if ":" in entry:
+            agent_id, endpoint = entry.split(":", 1)
+            KNOWN_AGENTS[agent_id.strip()] = endpoint.strip()
+
 # Validate interval bounds
 def validate_interval(interval_ms: int) -> int:
     """Ensure interval is within acceptable bounds."""

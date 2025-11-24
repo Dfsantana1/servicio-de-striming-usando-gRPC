@@ -45,7 +45,7 @@ if [ -f "app/metrics_pb2_grpc.py" ]; then
 fi
 
 # Configurar variables de entorno (puedes modificarlas aquí)
-export AGENT_ID=${AGENT_ID:-"local-machine"}
+export AGENT_ID=${AGENT_ID:-"ngrok-1"}
 export HOSTNAME=${HOSTNAME:-$(hostname)}
 export GRPC_PORT=${GRPC_PORT:-50051}
 export TOP_N_PROCS=${TOP_N_PROCS:-10}
@@ -57,6 +57,12 @@ export HTTP_BRIDGE_PORT=${HTTP_BRIDGE_PORT:-8000}
 
 # Opcional: descomentar para habilitar autenticación
 # export API_TOKEN="tu-token-secreto-aqui"
+
+# Opcional: Registrar agentes remotos conocidos
+# Formato: "agent_id1:endpoint1,agent_id2:endpoint2"
+# Ejemplo:
+# export KNOWN_AGENTS="ngrok-1:https://98cf7bfce07a.ngrok-free.app/grpc,ngrok-2:http://localhost:8000p/grpc"
+export KNOWN_AGENTS=${KNOWN_AGENTS:-"ngrok-1:https://f72a9450f815.ngrok-free.app/grpc"}
 
 echo -e "${GREEN}✅ Configuración:${NC}"
 echo -e "   Agent ID: $AGENT_ID"
