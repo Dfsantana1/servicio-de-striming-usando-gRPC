@@ -45,7 +45,7 @@ if [ -f "app/metrics_pb2_grpc.py" ]; then
 fi
 
 # Configurar variables de entorno (puedes modificarlas aquí)
-export AGENT_ID=${AGENT_ID:-"ngrok-1"}
+export AGENT_ID=${AGENT_ID:-"local-machine"}
 export HOSTNAME=${HOSTNAME:-$(hostname)}
 export GRPC_PORT=${GRPC_PORT:-50051}
 export TOP_N_PROCS=${TOP_N_PROCS:-10}
